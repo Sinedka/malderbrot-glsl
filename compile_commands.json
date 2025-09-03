@@ -1,0 +1,32 @@
+[
+  {
+    "arguments": [
+      "/nix/store/kaj8d1zcn149m40s9h0xi0khakibiphz-gcc-wrapper-14.3.0/bin/g++",
+      "-Wall",
+      "-g",
+      "-Iinclude",
+      "-c",
+      "-o",
+      ".build/main.o",
+      "main.cpp"
+    ],
+    "directory": "/home/sinedka/maldebrot",
+    "file": "/home/sinedka/maldebrot/main.cpp",
+    "output": "/home/sinedka/maldebrot/.build/main.o"
+  },
+  {
+    "arguments": [
+      "/nix/store/kaj8d1zcn149m40s9h0xi0khakibiphz-gcc-wrapper-14.3.0/bin/gcc",
+      "-Wall",
+      "-g",
+      "-Iinclude",
+      "-c",
+      "-o",
+      ".build/glad.o",
+      "glad.c"
+    ],
+    "directory": "/home/sinedka/maldebrot",
+    "file": "/home/sinedka/maldebrot/glad.c",
+    "output": "/home/sinedka/maldebrot/.build/glad.o"
+  }
+]
