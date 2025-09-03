@@ -2,6 +2,10 @@
 #include <GLFW/glfw3.h>
 #include <iostream>
 #include <cmath>
+#include <fstream>
+#include <ostream>
+#include <sstream>
+
 
 // Размеры окна
 const int WINDOW_WIDTH = 800;
@@ -14,6 +18,25 @@ struct MandelbrotParams {
     double zoom = 2.0;
     int maxIterations = 100;
 } params;
+
+// Функция для чтения шейдера из файла
+const char* loadShaderSource(const char* filePath) {
+    std::ifstream file(filePath, std::ios::in | std::ios::binary);
+    if (!file) {
+        throw std::runtime_error("Не удалось открыть файл шейдера");
+    }
+
+    std::ostringstream contents;
+    contents << file.rdbuf();
+    std::string str = contents.str();
+
+    // Копируем в динамическую память
+    char* shaderSource = new char[str.size() + 1];
+    std::copy(str.begin(), str.end(), shaderSource);
+    shaderSource[str.size()] = '\0'; // обязательно завершаем нулём
+
+    return shaderSource;
+}
 
 // Vertex shader source
 const char* vertexShaderSource = R"(
@@ -29,55 +52,33 @@ void main()
 )";
 
 // Fragment shader source
-const char* fragmentShaderSource = R"(
-#version 330 core
-in vec2 fragCoord;
-out vec4 FragColor;
+const char* fragmentShaderSource = loadShaderSource("shader.glsl");
 
-uniform vec2 u_resolution;
-uniform vec2 u_center;
-uniform float u_zoom;
-uniform int u_maxIterations;
-
-vec3 hsv2rgb(vec3 c) {
-    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
-    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
-    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
-}
-
-int mandelbrot(vec2 c) {
-    vec2 z = vec2(0.0);
-    int iterations = 0;
+struct DoubleEmulated {
+    float hi;
+    float lo;
     
-    for (int i = 0; i < u_maxIterations; i++) {
-        if (dot(z, z) > 4.0) break;
-        z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
-        iterations++;
+    DoubleEmulated(double value) {
+        hi = static_cast<float>(value);
+        lo = static_cast<float>(value - static_cast<double>(hi));
     }
-    
-    return iterations;
-}
+};
 
-void main() {
-    // Преобразование координат экрана в комплексную плоскость
-    vec2 uv = (fragCoord * 0.5 + 0.5) * u_resolution;
-    vec2 c = (uv - u_resolution * 0.5) / min(u_resolution.x, u_resolution.y) * u_zoom + u_center;
+
+// Функция для отправки в шейдер
+void setDoubleUniform(GLuint program, const char* name, double value) {
+    DoubleEmulated d(value);
     
-    int iterations = mandelbrot(c);
+    std::string hiName = std::string(name) + "_hi";
+    std::string loName = std::string(name) + "_lo";
     
-    if (iterations == u_maxIterations) {
-        // Точка принадлежит множеству - черный цвет
-        FragColor = vec4(0.0, 0.0, 0.0, 1.0);
-    } else {
-        // Цветовая схема на основе количества итераций
-        float t = float(iterations) / float(u_maxIterations);
-        
-        // HSV цвета для красивого градиента
-        vec3 color = hsv2rgb(vec3(t * 6.0 + 0.1, 0.8, 1.0));
-        FragColor = vec4(color, 1.0);
-    }
+    GLint hiLoc = glGetUniformLocation(program, hiName.c_str());
+    GLint loLoc = glGetUniformLocation(program, loName.c_str());
+    std::cout << d.hi << std::endl;
+    std::cout << d.lo << std::endl;
+    glUniform1f(hiLoc, d.hi);
+    glUniform1f(loLoc, d.lo);
 }
-)";
 
 // Функция обработки ошибок GLFW
 void glfwErrorCallback(int error, const char* description) {
@@ -235,8 +236,8 @@ int main() {
     
     // Получение uniform локаций
     int resolutionLoc = glGetUniformLocation(shaderProgram, "u_resolution");
-    int centerLoc = glGetUniformLocation(shaderProgram, "u_center");
-    int zoomLoc = glGetUniformLocation(shaderProgram, "u_zoom");
+    // int centerLoc = glGetUniformLocation(shaderProgram, "u_center");
+    // int zoomLoc = glGetUniformLocation(shaderProgram, "u_zoom");
     int maxIterationsLoc = glGetUniformLocation(shaderProgram, "u_maxIterations");
     
     // Основной цикл рендеринга
@@ -256,8 +257,14 @@ int main() {
         
         // Установка uniform переменных
         glUniform2f(resolutionLoc, (float)width, (float)height);
-        glUniform2f(centerLoc, (float)params.centerX, (float)params.centerY);
-        glUniform1f(zoomLoc, (float)params.zoom);
+
+        // glUniform2f(centerLoc, (float)params.centerX, (float)params.centerY);
+        // glUniform1f(zoomLoc, (float)params.zoom);
+
+        setDoubleUniform(shaderProgram, "u_centerx", params.centerX);
+        setDoubleUniform(shaderProgram, "u_centery", params.centerY);
+        setDoubleUniform(shaderProgram, "u_zoom", params.zoom);
+
         glUniform1i(maxIterationsLoc, params.maxIterations);
         
         // Рендеринг
