@@ -6,7 +6,7 @@ BUILD_DIR = .build
 CXX = g++
 CC = gcc
 CXXFLAGS = -Wall -g -Iinclude
-LDFLAGS = -lglfw -ldl -lGL
+LDFLAGS = -lglfw -ldl -lGL -lOpenCL
 
 # Исходники
 SRCS = main.cpp glad.c

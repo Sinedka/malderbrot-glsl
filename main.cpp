@@ -1,285 +1,180 @@
+// clang-format off
+#define CL_TARGET_OPENCL_VERSION 200
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+#include <CL/cl.h>
 #include <iostream>
+#include <vector>
+#include <cstring>
 #include <cmath>
-#include <fstream>
-#include <ostream>
-#include <sstream>
+// clang-format on
 
+// --- Параметры окна и Мандельброта ---
+const int WIDTH = 800;
+const int HEIGHT = 600;
+int MAX_ITER = 500;
+double centerX = -0.5, centerY = 0.0, zoom = 2.0;
 
-// Размеры окна
-const int WINDOW_WIDTH = 800;
-const int WINDOW_HEIGHT = 600;
+// --- OpenCL ядро ---
+const char *mandelbrotKernel = R"(
+#ifdef cl_khr_fp64
+#pragma OPENCL EXTENSION cl_khr_fp64 : enable
+#elif defined(cl_amd_fp64)
+#pragma OPENCL EXTENSION cl_amd_fp64 : enable
+#else
+#error "Double precision floating point not supported by OpenCL implementation."
+#endif
 
-// Параметры множества Мандельброта
-struct MandelbrotParams {
-    double centerX = -0.5;
-    double centerY = 0.0;
-    double zoom = 2.0;
-    int maxIterations = 100;
-} params;
-
-// Функция для чтения шейдера из файла
-const char* loadShaderSource(const char* filePath) {
-    std::ifstream file(filePath, std::ios::in | std::ios::binary);
-    if (!file) {
-        throw std::runtime_error("Не удалось открыть файл шейдера");
-    }
-
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    std::string str = contents.str();
-
-    // Копируем в динамическую память
-    char* shaderSource = new char[str.size() + 1];
-    std::copy(str.begin(), str.end(), shaderSource);
-    shaderSource[str.size()] = '\0'; // обязательно завершаем нулём
-
-    return shaderSource;
-}
-
-// Vertex shader source
-const char* vertexShaderSource = R"(
-#version 330 core
-layout (location = 0) in vec2 aPos;
-out vec2 fragCoord;
-
-void main()
+__kernel void mandelbrot(
+    __global uchar4* image,
+    const int width,
+    const int height,
+    const double centerX,
+    const double centerY,
+    const double zoom,
+    const int maxIter)
 {
-    fragCoord = aPos;
-    gl_Position = vec4(aPos.x, aPos.y, 0.0, 1.0);
+    int x = get_global_id(0);
+    int y = get_global_id(1);
+    double scale = zoom / (double)height;
+    double real = centerX + (x - width/2.0) * scale;
+    double imag = centerY + (y - height/2.0) * scale;
+    double zr = 0.0, zi = 0.0;
+    int iter = 0;
+    while(zr*zr + zi*zi < 4.0 && iter < maxIter){
+        double tmp = zr*zr - zi*zi + real;
+        zi = 2.0*zr*zi + imag;
+        zr = tmp;
+        iter++;
+    }
+    float t = (float)iter / maxIter;
+    uchar r = (uchar)(9*(1-t)*t*t*t*255);
+    uchar g = (uchar)(15*(1-t)*(1-t)*t*t*255);
+    uchar b = (uchar)(8.5*(1-t)*(1-t)*(1-t)*t*255);
+    image[y*width + x] = (uchar4)(r,g,b,255);
 }
 )";
 
-// Fragment shader source
-const char* fragmentShaderSource = loadShaderSource("shader.glsl");
-
-struct DoubleEmulated {
-    float hi;
-    float lo;
-    
-    DoubleEmulated(double value) {
-        hi = static_cast<float>(value);
-        lo = static_cast<float>(value - static_cast<double>(hi));
-    }
-};
-
-
-// Функция для отправки в шейдер
-void setDoubleUniform(GLuint program, const char* name, double value) {
-    DoubleEmulated d(value);
-    
-    std::string hiName = std::string(name) + "_hi";
-    std::string loName = std::string(name) + "_lo";
-    
-    GLint hiLoc = glGetUniformLocation(program, hiName.c_str());
-    GLint loLoc = glGetUniformLocation(program, loName.c_str());
-    std::cout << d.hi << std::endl;
-    std::cout << d.lo << std::endl;
-    glUniform1f(hiLoc, d.hi);
-    glUniform1f(loLoc, d.lo);
+// --- Создание OpenGL текстуры ---
+GLuint createTexture(int w, int h) {
+    GLuint tex;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    return tex;
 }
 
-// Функция обработки ошибок GLFW
-void glfwErrorCallback(int error, const char* description) {
-    std::cerr << "GLFW Error (" << error << "): " << description << std::endl;
-}
-
-// Функция обработки изменения размера окна
-void framebufferSizeCallback(GLFWwindow* window, int width, int height) {
-    glViewport(0, 0, width, height);
-}
-
-// Функция обработки клавиатуры
-void processInput(GLFWwindow* window) {
-    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
-        glfwSetWindowShouldClose(window, true);
-    }
-    
-    double moveSpeed = params.zoom * 0.01;
-    
-    // Перемещение
-    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) {
-        params.centerY += moveSpeed;
-    }
-    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) {
-        params.centerY -= moveSpeed;
-    }
-    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) {
-        params.centerX -= moveSpeed;
-    }
-    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) {
-        params.centerX += moveSpeed;
-    }
-    
-    // Масштабирование
-    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) {
-        params.zoom *= 0.95;
-    }
-    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) {
-        params.zoom *= 1.05;
-    }
-    
-    // Изменение количества итераций
-    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
-        params.maxIterations = std::min(params.maxIterations + 5, 1000);
-    }
-    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
-        params.maxIterations = std::max(params.maxIterations - 5, 10);
-    }
-    
-    // Сброс параметров
+// --- GLFW обработка ввода ---
+void processInput(GLFWwindow *window) {
+    double moveSpeed = zoom * 0.01;
+    if (glfwGetKey(window, GLFW_KEY_W) == GLFW_PRESS) centerY += moveSpeed;
+    if (glfwGetKey(window, GLFW_KEY_S) == GLFW_PRESS) centerY -= moveSpeed;
+    if (glfwGetKey(window, GLFW_KEY_A) == GLFW_PRESS) centerX -= moveSpeed;
+    if (glfwGetKey(window, GLFW_KEY_D) == GLFW_PRESS) centerX += moveSpeed;
+    if (glfwGetKey(window, GLFW_KEY_Q) == GLFW_PRESS) zoom *= 0.95;
+    if (glfwGetKey(window, GLFW_KEY_E) == GLFW_PRESS) zoom *= 1.05;
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) MAX_ITER = std::min(MAX_ITER + 5, 1000);
+    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) MAX_ITER = std::max(MAX_ITER - 5, 10);
     if (glfwGetKey(window, GLFW_KEY_R) == GLFW_PRESS) {
-        params.centerX = -0.5;
-        params.centerY = 0.0;
-        params.zoom = 2.0;
-        params.maxIterations = 100;
+        centerX = -0.5;
+        centerY = 0.0;
+        zoom = 2.0;
+        MAX_ITER = 500;
     }
-}
-
-// Функция компиляции шейдера
-unsigned int compileShader(unsigned int type, const char* source) {
-    unsigned int shader = glCreateShader(type);
-    glShaderSource(shader, 1, &source, nullptr);
-    glCompileShader(shader);
-    
-    int success;
-    glGetShaderiv(shader, GL_COMPILE_STATUS, &success);
-    if (!success) {
-        char infoLog[512];
-        glGetShaderInfoLog(shader, 512, nullptr, infoLog);
-        std::cerr << "Shader compilation failed: " << infoLog << std::endl;
-    }
-    
-    return shader;
-}
-
-// Функция создания шейдерной программы
-unsigned int createShaderProgram() {
-    unsigned int vertexShader = compileShader(GL_VERTEX_SHADER, vertexShaderSource);
-    unsigned int fragmentShader = compileShader(GL_FRAGMENT_SHADER, fragmentShaderSource);
-    
-    unsigned int shaderProgram = glCreateProgram();
-    glAttachShader(shaderProgram, vertexShader);
-    glAttachShader(shaderProgram, fragmentShader);
-    glLinkProgram(shaderProgram);
-    
-    int success;
-    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
-    if (!success) {
-        char infoLog[512];
-        glGetProgramInfoLog(shaderProgram, 512, nullptr, infoLog);
-        std::cerr << "Shader program linking failed: " << infoLog << std::endl;
-    }
-    
-    glDeleteShader(vertexShader);
-    glDeleteShader(fragmentShader);
-    
-    return shaderProgram;
 }
 
 int main() {
-    // Инициализация GLFW
-    glfwSetErrorCallback(glfwErrorCallback);
-    if (!glfwInit()) {
-        std::cerr << "Failed to initialize GLFW" << std::endl;
-        return -1;
-    }
-    
-    // Настройка GLFW
+    // --- GLFW + OpenGL ---
+    if (!glfwInit()) return -1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    
-    // Создание окна
-    GLFWwindow* window = glfwCreateWindow(WINDOW_WIDTH, WINDOW_HEIGHT, "Множество Мандельброта", nullptr, nullptr);
-    if (!window) {
-        std::cerr << "Failed to create GLFW window" << std::endl;
-        glfwTerminate();
-        return -1;
-    }
-    
+
+    GLFWwindow *window = glfwCreateWindow(WIDTH, HEIGHT, "Mandelbrot OpenCL+OpenGL", nullptr, nullptr);
     glfwMakeContextCurrent(window);
-    glfwSetFramebufferSizeCallback(window, framebufferSizeCallback);
-    
-    // Инициализация GLAD
-    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
-        std::cerr << "Failed to initialize GLAD" << std::endl;
+    gladLoadGL();
+
+    GLuint texture = createTexture(WIDTH, HEIGHT);
+
+    // --- OpenCL init ---
+    cl_int err;
+    cl_platform_id platform;
+    clGetPlatformIDs(1, &platform, nullptr);
+    cl_device_id device;
+    clGetDeviceIDs(platform, CL_DEVICE_TYPE_GPU, 1, &device, nullptr);
+    cl_context context = clCreateContext(nullptr, 1, &device, nullptr, nullptr, &err);
+    cl_command_queue queue = clCreateCommandQueue(context, device, 0, &err);
+
+    cl_program program = clCreateProgramWithSource(context, 1, &mandelbrotKernel, nullptr, &err);
+    err = clBuildProgram(program, 1, &device, nullptr, nullptr, nullptr);
+    if (err != CL_SUCCESS) {
+        size_t logSize;
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, 0, nullptr, &logSize);
+        std::string log(logSize, '\0');
+        clGetProgramBuildInfo(program, device, CL_PROGRAM_BUILD_LOG, logSize, &log[0], nullptr);
+        std::cerr << log << std::endl;
         return -1;
     }
-    
-    // Создание шейдерной программы
-    unsigned int shaderProgram = createShaderProgram();
-    
-    // Вершины для полноэкранного квада
-    float vertices[] = {
-        -1.0f, -1.0f,
-         1.0f, -1.0f,
-         1.0f,  1.0f,
-         1.0f,  1.0f,
-        -1.0f,  1.0f,
-        -1.0f, -1.0f
-    };
-    
-    // Создание VAO и VBO
-    unsigned int VBO, VAO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
-    
-    glBindVertexArray(VAO);
-    
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-    
-    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
-    glEnableVertexAttribArray(0);
-    
-    // Получение uniform локаций
-    int resolutionLoc = glGetUniformLocation(shaderProgram, "u_resolution");
-    // int centerLoc = glGetUniformLocation(shaderProgram, "u_center");
-    // int zoomLoc = glGetUniformLocation(shaderProgram, "u_zoom");
-    int maxIterationsLoc = glGetUniformLocation(shaderProgram, "u_maxIterations");
-    
-    // Основной цикл рендеринга
+
+    cl_kernel kernel = clCreateKernel(program, "mandelbrot", &err);
+    std::vector<cl_uchar4> buffer(WIDTH * HEIGHT);
+
+    // --- Основной цикл ---
     while (!glfwWindowShouldClose(window)) {
         processInput(window);
-        
-        // Получение размеров окна
-        int width, height;
-        glfwGetWindowSize(window, &width, &height);
-        
-        // Очистка экрана
-        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+
+        cl_mem clBuffer = clCreateBuffer(context, CL_MEM_WRITE_ONLY | CL_MEM_COPY_HOST_PTR,
+                                         sizeof(cl_uchar4) * buffer.size(), buffer.data(), &err);
+
+        clSetKernelArg(kernel, 0, sizeof(cl_mem), &clBuffer);
+        clSetKernelArg(kernel, 1, sizeof(int), &WIDTH);
+        clSetKernelArg(kernel, 2, sizeof(int), &HEIGHT);
+        clSetKernelArg(kernel, 3, sizeof(double), &centerX);
+        clSetKernelArg(kernel, 4, sizeof(double), &centerY);
+        clSetKernelArg(kernel, 5, sizeof(double), &zoom);
+        clSetKernelArg(kernel, 6, sizeof(int), &MAX_ITER);
+
+        size_t global[2] = {WIDTH, HEIGHT};
+        clEnqueueNDRangeKernel(queue, kernel, 2, nullptr, global, nullptr, 0, nullptr, nullptr);
+        clEnqueueReadBuffer(queue, clBuffer, CL_TRUE, 0, sizeof(cl_uchar4) * buffer.size(), buffer.data(), 0, nullptr, nullptr);
+        clReleaseMemObject(clBuffer);
+
+        // --- Загрузка в OpenGL текстуру ---
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, WIDTH, HEIGHT, GL_RGBA, GL_UNSIGNED_BYTE, buffer.data());
+
+        // --- Рендеринг через современные OpenGL ---
         glClear(GL_COLOR_BUFFER_BIT);
-        
-        // Использование шейдерной программы
-        glUseProgram(shaderProgram);
-        
-        // Установка uniform переменных
-        glUniform2f(resolutionLoc, (float)width, (float)height);
 
-        // glUniform2f(centerLoc, (float)params.centerX, (float)params.centerY);
-        // glUniform1f(zoomLoc, (float)params.zoom);
+        static GLuint vao = 0, vbo = 0;
+        if (!vao) {
+            float vertices[] = {
+                // x, y, u, v
+                -1.0f, -1.0f, 0.0f, 0.0f,
+                 1.0f, -1.0f, 1.0f, 0.0f,
+                -1.0f,  1.0f, 0.0f, 1.0f,
+                 1.0f,  1.0f, 1.0f, 1.0f
+            };
+            glGenVertexArrays(1, &vao);
+            glGenBuffers(1, &vbo);
+            glBindVertexArray(vao);
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+        }
 
-        setDoubleUniform(shaderProgram, "u_centerx", params.centerX);
-        setDoubleUniform(shaderProgram, "u_centery", params.centerY);
-        setDoubleUniform(shaderProgram, "u_zoom", params.zoom);
+        glBindVertexArray(vao);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
 
-        glUniform1i(maxIterationsLoc, params.maxIterations);
-        
-        // Рендеринг
-        glBindVertexArray(VAO);
-        glDrawArrays(GL_TRIANGLES, 0, 6);
-        
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
-    
-    // Очистка ресурсов
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
-    glDeleteProgram(shaderProgram);
-    
-    glfwTerminate();
+
     return 0;
 }
+
